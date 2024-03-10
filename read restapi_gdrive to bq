@@ -1,0 +1,153 @@
+//https://www.codeemall.info/posts/gas-load-into-bq/
+// Function to convert JSONL data to an array of rows
+function jsonlToRows(jsonlData) {
+  var rows = [];
+  var lines = jsonlData.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.trim() !== '') {
+      var row = {
+        json: JSON.parse(line)
+      };
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+// Function to create a temporary file in Google Drive
+function createTempFile(jsonlData, folderId, name) {
+  var folder = folderId ? DriveApp.getFolderById(folderId) : DriveApp.getRootFolder();
+  var files = folder.getFilesByName(name);
+
+  // Check if a file with the same name already exists
+  if (files.hasNext()) {
+    var existingFile = files.next();
+    existingFile.setContent(jsonlData); // Overwrite the existing file with new content
+    return existingFile;
+  } else {
+    var file = folder.createFile(name, jsonlData);
+    return file;
+  }
+}
+
+function getFileId(fileName, folderId) {
+  // Get the folder by its ID
+  var folder = DriveApp.getFolderById(folderId);
+  
+  // Search for the file with the given name in the folder
+  var files = folder.getFilesByName(fileName);
+  
+  // Check if the file exists
+  if (files.hasNext()) {
+    // Return the ID of the first file found with the given name
+    return files.next().getId();
+  } else {
+    // File not found
+    return null;
+  }
+}
+
+// Function to download file content from Google Drive
+function downloadFileContent(fileId) {
+  var url = 'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media';
+  var response = UrlFetchApp.fetch(url, {
+    headers: {
+      Authorization: 'Bearer ' + ScriptApp.getOAuthToken()
+    }
+  });
+  return response.getContentText();
+}
+
+function fetchPosts() {
+  //auth
+  var SITE_URL = 'https://XXXXXXXXXXXXXXXXXXXXX'
+  var AUTH_TOKEN = 'XXXXXXXXXXXXXXXXXXXXx'
+  var headers = { 'Authorization': 'Bearer ' + AUTH_TOKEN };
+  var name ='all_posts.jsonl'
+  var folderId = "XXXXXXXXXXXXXXX"
+
+
+  // Fetch all posts paginated and append them to the JSON Lines file
+  var page = 1;
+  var jsonlData = '';
+
+  while (true) {
+    Logger.log("Fetching page " + page);
+
+    var response = UrlFetchApp.fetch(SITE_URL + '/wp-json/wp/v2/posts?page=' + page, {
+      headers: headers,
+      muteHttpExceptions: true
+    });
+    
+    // Check if response status is 400 (Bad Request)
+    if (response.getResponseCode() == 400) {
+      Logger.log("Bad Request received. Exiting loop.");
+      break;
+    }
+    var pagePosts = JSON.parse(response.getContentText());
+    //Logger.log(pagePosts);
+
+    // If no more posts found, exit loop
+    if (pagePosts.length == 0) {
+      Logger.log("No more posts found. Exiting loop.");
+      break;
+    }
+
+      // Append each post to the file in JSON Lines format
+    for (var i = 0; i < pagePosts.length; i++) {
+      var post = pagePosts[i];
+      jsonlData += JSON.stringify(post) + '\n';
+  }
+    
+    page++;
+  }
+
+  // Create a temporary file in Google Drive
+  createTempFile(jsonlData, folderId,name);
+  Logger.log("All posts saved to 'all_posts.jsonl'.");
+
+
+  loadJsonlDataToBigQuery( 'concise-rope-356505','kaeru_sapiens',"test",jsonlData)
+}
+
+// Function to read JSONL data from a file in Google Drive
+function readJsonlDataFromDrive(fileId) {
+  var file = DriveApp.getFileById(fileId);
+  var jsonData = file.getBlob().getDataAsString();
+  return jsonData;
+}
+function loadJsonlDataToBigQuery(projectId, datasetId,tableId,jsonl) {
+
+
+  // Get the folder by its ID
+  //var fileId = getFileId(filename, folderId);
+  //console.log(fileId)
+  //var jsonData = readJsonlDataFromDrive(fileId);
+
+
+  const data = Utilities.newBlob(jsonl);
+  // Prepare the job configuration for loading data into BigQuery
+  var jobConfiguration = {
+    configuration: {
+      load: {
+        destinationTable: {
+          projectId: projectId,
+          datasetId: datasetId,
+          tableId: tableId
+        },
+        autodetect: true,
+        sourceFormat: 'NEWLINE_DELIMITED_JSON',
+        //sourceUris: ['data:text/plain;charset=utf-8,' + encodeURIComponent(jsonData)],
+        writeDisposition: 'WRITE_TRUNCATE' // Overwrite the destination table if it already exists
+      }
+    }
+  };
+// Create a BigQuery load job
+  var job = BigQuery.Jobs.insert(jobConfiguration, projectId,data);
+  
+  // Get the job ID
+  var jobId = job.jobReference.jobId;
+  Logger.log('Load job created with jobId: ' + jobId);
+}
+
